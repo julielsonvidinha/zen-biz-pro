@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { Package, Eye, EyeOff } from "lucide-react";
+import { Package, Eye, EyeOff, Loader2 } from "lucide-react";
 
 const Auth = () => {
   const [isLogin, setIsLogin] = useState(true);
@@ -20,22 +20,49 @@ const Auth = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (!email.trim() || !password.trim()) {
+      toast({ title: "Preencha todos os campos", variant: "destructive" });
+      return;
+    }
+    if (!isLogin && !fullName.trim()) {
+      toast({ title: "Preencha o nome completo", variant: "destructive" });
+      return;
+    }
+    if (password.length < 6) {
+      toast({ title: "A senha deve ter no mínimo 6 caracteres", variant: "destructive" });
+      return;
+    }
+
     setLoading(true);
     try {
       if (isLogin) {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (error) {
+          if (error.message.includes("Invalid login credentials")) {
+            throw new Error("E-mail ou senha incorretos. Verifique seus dados.");
+          }
+          if (error.message.includes("Email not confirmed")) {
+            throw new Error("E-mail não confirmado. Verifique sua caixa de entrada.");
+          }
+          throw error;
+        }
         navigate("/");
       } else {
         const { error } = await supabase.auth.signUp({
-          email,
+          email: email.trim(),
           password,
           options: {
-            data: { full_name: fullName },
+            data: { full_name: fullName.trim() },
             emailRedirectTo: window.location.origin,
           },
         });
-        if (error) throw error;
+        if (error) {
+          if (error.message.includes("already registered")) {
+            throw new Error("Este e-mail já está cadastrado. Tente fazer login.");
+          }
+          throw error;
+        }
         toast({
           title: "Conta criada!",
           description: "Verifique seu e-mail para confirmar o cadastro.",
@@ -44,7 +71,7 @@ const Auth = () => {
     } catch (error: any) {
       toast({
         title: "Erro",
-        description: error.message,
+        description: error.message || "Ocorreu um erro inesperado.",
         variant: "destructive",
       });
     } finally {
@@ -76,18 +103,18 @@ const Auth = () => {
             <form onSubmit={handleSubmit} className="space-y-4">
               {!isLogin && (
                 <div className="space-y-2">
-                  <Label htmlFor="fullName">Nome completo</Label>
+                  <Label htmlFor="fullName">Nome completo *</Label>
                   <Input
                     id="fullName"
                     value={fullName}
                     onChange={(e) => setFullName(e.target.value)}
-                    placeholder="Seu nome"
+                    placeholder="Seu nome completo"
                     required={!isLogin}
                   />
                 </div>
               )}
               <div className="space-y-2">
-                <Label htmlFor="email">E-mail</Label>
+                <Label htmlFor="email">E-mail *</Label>
                 <Input
                   id="email"
                   type="email"
@@ -98,14 +125,14 @@ const Auth = () => {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="password">Senha</Label>
+                <Label htmlFor="password">Senha *</Label>
                 <div className="relative">
                   <Input
                     id="password"
                     type={showPassword ? "text" : "password"}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••"
+                    placeholder="Mínimo 6 caracteres"
                     required
                     minLength={6}
                   />
@@ -118,13 +145,15 @@ const Auth = () => {
                   </button>
                 </div>
               </div>
-              <Button type="submit" className="w-full" disabled={loading}>
+              <Button type="submit" className="w-full h-11" disabled={loading}>
+                {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
                 {loading ? "Aguarde..." : isLogin ? "Entrar" : "Criar conta"}
               </Button>
             </form>
             <div className="mt-4 text-center">
               <button
-                onClick={() => setIsLogin(!isLogin)}
+                type="button"
+                onClick={() => { setIsLogin(!isLogin); setEmail(""); setPassword(""); setFullName(""); }}
                 className="text-sm text-primary hover:underline"
               >
                 {isLogin ? "Não tem conta? Cadastre-se" : "Já tem conta? Faça login"}
