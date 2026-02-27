@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,7 +12,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { generateSaleReceiptPDF, generateSaleFullPDF } from "@/lib/pdf-generator";
 import {
   Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote,
-  QrCode, User, Loader2, FileText, Download, Receipt, XCircle
+  QrCode, User, Loader2, FileText, Download, Receipt, XCircle, Monitor
 } from "lucide-react";
 
 interface CartItem {
@@ -33,7 +33,7 @@ interface ProductResult {
 
 const PDV = () => {
   const { toast } = useToast();
-  const { user, hasRole } = useAuth();
+  const { user, profile, hasRole } = useAuth();
   const [search, setSearch] = useState("");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchResults, setSearchResults] = useState<ProductResult[]>([]);
@@ -43,17 +43,23 @@ const PDV = () => {
   const [paymentMethod, setPaymentMethod] = useState<string | null>(null);
   const [finalizing, setFinalizing] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
-
-  // Post-sale state
   const [completedSale, setCompletedSale] = useState<any>(null);
   const [receiptDialogOpen, setReceiptDialogOpen] = useState(false);
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const [emittingNfe, setEmittingNfe] = useState(false);
+  const [company, setCompany] = useState<any>(null);
 
   const total = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
+  const totalItems = cart.reduce((sum, item) => sum + item.qty, 0);
   const discount = 0;
 
-  // Search products
+  // Load company settings
+  useEffect(() => {
+    supabase.from("company_settings").select("*").limit(1).maybeSingle().then(({ data }) => {
+      if (data) setCompany(data);
+    });
+  }, []);
+
   const searchProducts = useCallback(async (q: string) => {
     if (q.length < 2) { setSearchResults([]); return; }
     setSearching(true);
@@ -93,70 +99,36 @@ const PDV = () => {
   const removeItem = (id: string) => setCart(prev => prev.filter(i => i.product_id !== id));
 
   const cancelSale = () => {
-    setCart([]);
-    setPaymentMethod(null);
-    setCustomerName("");
-    setCustomerCpf("");
+    setCart([]); setPaymentMethod(null); setCustomerName(""); setCustomerCpf("");
     setCancelDialogOpen(false);
     toast({ title: "Venda cancelada" });
   };
 
   const finalizeSale = async () => {
-    if (!paymentMethod) {
-      toast({ title: "Selecione a forma de pagamento", variant: "destructive" });
-      return;
-    }
-    if (cart.length === 0) {
-      toast({ title: "Carrinho vazio", variant: "destructive" });
-      return;
-    }
-    // Validate stock
+    if (!paymentMethod) { toast({ title: "Selecione a forma de pagamento", variant: "destructive" }); return; }
+    if (cart.length === 0) { toast({ title: "Carrinho vazio", variant: "destructive" }); return; }
     const overStock = cart.find(i => i.qty > i.stock_qty);
-    if (overStock) {
-      toast({ title: `Estoque insuficiente: ${overStock.name}`, description: `Disponível: ${overStock.stock_qty}`, variant: "destructive" });
-      return;
-    }
+    if (overStock) { toast({ title: `Estoque insuficiente: ${overStock.name}`, description: `Disponível: ${overStock.stock_qty}`, variant: "destructive" }); return; }
 
     setFinalizing(true);
     const items = cart.map(i => ({
-      product_id: i.product_id,
-      product_name: i.name,
-      qty: i.qty,
-      unit_price: i.price,
-      total: i.price * i.qty,
+      product_id: i.product_id, product_name: i.name, qty: i.qty,
+      unit_price: i.price, total: i.price * i.qty,
     }));
 
     const { data: saleId, error } = await supabase.rpc("finalize_sale", {
-      p_customer_name: customerName || null,
-      p_customer_cpf: customerCpf || null,
-      p_subtotal: total,
-      p_discount: discount,
-      p_total: total - discount,
-      p_payment_method: paymentMethod,
-      p_items: items,
+      p_customer_name: customerName || null, p_customer_cpf: customerCpf || null,
+      p_subtotal: total, p_discount: discount, p_total: total - discount,
+      p_payment_method: paymentMethod, p_items: items,
     });
 
-    if (error) {
-      toast({ title: "Erro ao finalizar venda", description: error.message, variant: "destructive" });
-      setFinalizing(false);
-      return;
-    }
+    if (error) { toast({ title: "Erro ao finalizar venda", description: error.message, variant: "destructive" }); setFinalizing(false); return; }
 
-    // Fetch completed sale for receipt
-    const { data: saleData } = await supabase
-      .from("sales")
-      .select("*")
-      .eq("id", saleId)
-      .single();
-
-    setCompletedSale({ ...saleData, items });
-    setCart([]);
-    setPaymentMethod(null);
-    setCustomerName("");
-    setCustomerCpf("");
-    setFinalizing(false);
-    setReceiptDialogOpen(true);
-    toast({ title: "Venda finalizada com sucesso!" });
+    const { data: saleData } = await supabase.from("sales").select("*").eq("id", saleId).single();
+    setCompletedSale({ ...saleData, items, operator_name: profile?.full_name, company });
+    setCart([]); setPaymentMethod(null); setCustomerName(""); setCustomerCpf("");
+    setFinalizing(false); setReceiptDialogOpen(true);
+    toast({ title: "✅ Venda finalizada com sucesso!" });
   };
 
   const downloadReceipt = () => {
@@ -165,9 +137,7 @@ const PDV = () => {
     try {
       const doc = generateSaleReceiptPDF(completedSale);
       doc.save(`comprovante-venda-${completedSale.sale_number}.pdf`);
-    } catch (e: any) {
-      toast({ title: "Erro ao gerar comprovante", description: e.message, variant: "destructive" });
-    }
+    } catch (e: any) { toast({ title: "Erro ao gerar comprovante", description: e.message, variant: "destructive" }); }
     setGeneratingPdf(false);
   };
 
@@ -177,9 +147,7 @@ const PDV = () => {
     try {
       const doc = generateSaleFullPDF(completedSale);
       doc.save(`venda-${completedSale.sale_number}.pdf`);
-    } catch (e: any) {
-      toast({ title: "Erro ao gerar PDF", description: e.message, variant: "destructive" });
-    }
+    } catch (e: any) { toast({ title: "Erro ao gerar PDF", description: e.message, variant: "destructive" }); }
     setGeneratingPdf(false);
   };
 
@@ -187,65 +155,70 @@ const PDV = () => {
     if (!completedSale) return;
     setEmittingNfe(true);
     try {
-      const { data, error } = await supabase.functions.invoke("emit-nfe", {
-        body: { sale_id: completedSale.id },
-      });
+      const { data, error } = await supabase.functions.invoke("emit-nfe", { body: { sale_id: completedSale.id } });
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
-      if (data?.status === "autorizada") {
-        toast({ title: "NF-e emitida com sucesso!", description: `Protocolo: ${data.protocol}` });
-      } else if (data?.status === "rejeitada") {
-        toast({ title: "NF-e rejeitada pela SEFAZ", description: data.rejection_reason, variant: "destructive" });
-      }
-    } catch (e: any) {
-      toast({ title: "Erro ao emitir NF-e", description: e.message, variant: "destructive" });
-    }
+      if (data?.status === "autorizada") toast({ title: "NF-e emitida!", description: `Protocolo: ${data.protocol}` });
+      else if (data?.status === "rejeitada") toast({ title: "NF-e rejeitada", description: data.rejection_reason, variant: "destructive" });
+    } catch (e: any) { toast({ title: "Erro ao emitir NF-e", description: e.message, variant: "destructive" }); }
     setEmittingNfe(false);
   };
 
-  return (
-    <div className="animate-fade-in h-[calc(100vh-3rem)]">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-full">
-        {/* Products search + cart */}
-        <div className="lg:col-span-2 flex flex-col gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-              <ShoppingCart className="w-5 h-5 text-primary" />
-            </div>
-            <div className="flex-1">
-              <h1 className="text-xl font-bold">Frente de Caixa</h1>
-            </div>
-            <Badge variant="outline" className="gap-1">
-              <User className="w-3 h-3" />
-              {customerName || "Cliente não identificado"}
-            </Badge>
-          </div>
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("pt-BR", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+  const timeStr = now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 
+  return (
+    <div className="animate-fade-in h-[calc(100vh-3rem)] flex flex-col">
+      {/* Top bar */}
+      <div className="flex items-center justify-between px-1 py-2 border-b border-border/50 bg-muted/30 rounded-t-lg mb-2">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-lg bg-primary flex items-center justify-center">
+            <Monitor className="w-5 h-5 text-primary-foreground" />
+          </div>
+          <div>
+            <h1 className="text-lg font-bold leading-tight">
+              {company?.trade_name || company?.company_name || "PDV"} — Frente de Caixa
+            </h1>
+            <p className="text-[11px] text-muted-foreground capitalize">{dateStr} • {timeStr}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-4">
+          <Badge variant="outline" className="gap-1 py-1 px-3">
+            <User className="w-3 h-3" />
+            <span className="text-xs">{profile?.full_name || "Operador"}</span>
+          </Badge>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 flex-1 min-h-0">
+        {/* Left: Search + Cart */}
+        <div className="lg:col-span-8 flex flex-col gap-3 min-h-0">
+          {/* Search bar */}
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
             <Input
-              placeholder="Buscar produto por nome ou código de barras..."
+              placeholder="🔍 Buscar produto por nome ou código de barras... (F2)"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="pl-10 h-12 text-base"
+              className="pl-12 h-14 text-lg font-medium border-2 border-primary/30 focus:border-primary rounded-xl"
               autoFocus
             />
-            {/* Search dropdown */}
             {searchResults.length > 0 && (
-              <Card className="absolute z-50 top-full mt-1 left-0 right-0 border-border/50 shadow-lg">
+              <Card className="absolute z-50 top-full mt-1 left-0 right-0 border-primary/20 shadow-xl rounded-xl overflow-hidden">
                 <CardContent className="p-0">
                   {searchResults.map(p => (
                     <button
                       key={p.id}
                       onClick={() => addToCart(p)}
-                      className="w-full flex items-center justify-between p-3 hover:bg-muted/50 border-b border-border/50 last:border-0 text-left"
+                      className="w-full flex items-center justify-between p-4 hover:bg-primary/5 border-b border-border/30 last:border-0 text-left transition-colors"
                     >
                       <div>
-                        <p className="text-sm font-medium">{p.name}</p>
+                        <p className="text-sm font-semibold">{p.name}</p>
                         <p className="text-xs text-muted-foreground">{p.barcode || "Sem código"}</p>
                       </div>
                       <div className="text-right">
-                        <p className="text-sm font-mono font-semibold">R$ {Number(p.price).toFixed(2)}</p>
+                        <p className="text-base font-mono font-bold text-primary">R$ {Number(p.price).toFixed(2)}</p>
                         <p className="text-xs text-muted-foreground">Estoque: {Number(p.stock_qty)}</p>
                       </div>
                     </button>
@@ -253,41 +226,45 @@ const PDV = () => {
                 </CardContent>
               </Card>
             )}
-            {searching && <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-muted-foreground" />}
+            {searching && <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 animate-spin text-muted-foreground" />}
           </div>
 
-          {/* Cart Items */}
-          <Card className="flex-1 border-border/50 overflow-auto">
+          {/* Cart Table */}
+          <Card className="flex-1 border-border/50 overflow-auto rounded-xl min-h-0">
             <CardContent className="p-0">
               <table className="w-full">
-                <thead>
-                  <tr className="border-b border-border/50 bg-muted/50">
-                    <th className="text-left p-3 text-xs font-medium text-muted-foreground">Produto</th>
-                    <th className="text-center p-3 text-xs font-medium text-muted-foreground w-32">Qtd</th>
-                    <th className="text-right p-3 text-xs font-medium text-muted-foreground w-28">Unit.</th>
-                    <th className="text-right p-3 text-xs font-medium text-muted-foreground w-28">Total</th>
+                <thead className="sticky top-0 z-10">
+                  <tr className="bg-primary text-primary-foreground">
+                    <th className="text-left p-3 text-xs font-semibold w-12">#</th>
+                    <th className="text-left p-3 text-xs font-semibold">PRODUTO</th>
+                    <th className="text-center p-3 text-xs font-semibold w-36">QTD</th>
+                    <th className="text-right p-3 text-xs font-semibold w-28">UNIT.</th>
+                    <th className="text-right p-3 text-xs font-semibold w-28">TOTAL</th>
                     <th className="p-3 w-12"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {cart.map(item => (
-                    <tr key={item.product_id} className="border-b border-border/50 last:border-0">
-                      <td className="p-3 text-sm font-medium">{item.name}</td>
+                  {cart.map((item, idx) => (
+                    <tr key={item.product_id} className="border-b border-border/30 hover:bg-muted/30 transition-colors">
+                      <td className="p-3 text-sm text-muted-foreground font-mono">{idx + 1}</td>
                       <td className="p-3">
-                        <div className="flex items-center justify-center gap-2">
-                          <button onClick={() => updateQty(item.product_id, -1)} className="w-7 h-7 rounded bg-muted flex items-center justify-center hover:bg-muted-foreground/20">
-                            <Minus className="w-3 h-3" />
+                        <p className="text-sm font-semibold">{item.name}</p>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex items-center justify-center gap-1">
+                          <button onClick={() => updateQty(item.product_id, -1)} className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center hover:bg-destructive/20 transition-colors">
+                            <Minus className="w-3.5 h-3.5" />
                           </button>
-                          <span className="font-mono text-sm w-8 text-center">{item.qty}</span>
-                          <button onClick={() => updateQty(item.product_id, 1)} className="w-7 h-7 rounded bg-muted flex items-center justify-center hover:bg-muted-foreground/20">
-                            <Plus className="w-3 h-3" />
+                          <span className="font-mono text-base font-bold w-10 text-center">{item.qty}</span>
+                          <button onClick={() => updateQty(item.product_id, 1)} className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center hover:bg-success/20 transition-colors">
+                            <Plus className="w-3.5 h-3.5" />
                           </button>
                         </div>
                       </td>
                       <td className="p-3 text-right font-mono text-sm">R$ {item.price.toFixed(2)}</td>
-                      <td className="p-3 text-right font-mono text-sm font-semibold">R$ {(item.price * item.qty).toFixed(2)}</td>
+                      <td className="p-3 text-right font-mono text-sm font-bold">R$ {(item.price * item.qty).toFixed(2)}</td>
                       <td className="p-3">
-                        <button onClick={() => removeItem(item.product_id)} className="text-muted-foreground hover:text-destructive">
+                        <button onClick={() => removeItem(item.product_id)} className="text-muted-foreground hover:text-destructive transition-colors">
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </td>
@@ -295,8 +272,10 @@ const PDV = () => {
                   ))}
                   {cart.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="p-12 text-center text-muted-foreground text-sm">
-                        Busque e adicione produtos ao carrinho
+                      <td colSpan={6} className="p-16 text-center">
+                        <ShoppingCart className="w-16 h-16 text-muted-foreground/20 mx-auto mb-4" />
+                        <p className="text-muted-foreground text-sm font-medium">Nenhum item no carrinho</p>
+                        <p className="text-muted-foreground/60 text-xs mt-1">Busque e adicione produtos acima</p>
                       </td>
                     </tr>
                   )}
@@ -304,40 +283,47 @@ const PDV = () => {
               </table>
             </CardContent>
           </Card>
+
+          {/* Bottom totals bar */}
+          <div className="flex items-center justify-between bg-foreground text-background rounded-xl p-4">
+            <div className="flex items-center gap-6">
+              <div>
+                <p className="text-xs opacity-70">Itens</p>
+                <p className="text-xl font-bold font-mono">{totalItems}</p>
+              </div>
+              <div>
+                <p className="text-xs opacity-70">Subtotal</p>
+                <p className="text-lg font-mono">R$ {total.toFixed(2)}</p>
+              </div>
+              {discount > 0 && (
+                <div>
+                  <p className="text-xs opacity-70">Desconto</p>
+                  <p className="text-lg font-mono text-success">- R$ {discount.toFixed(2)}</p>
+                </div>
+              )}
+            </div>
+            <div className="text-right">
+              <p className="text-xs opacity-70">TOTAL A PAGAR</p>
+              <p className="text-3xl font-extrabold font-mono">R$ {(total - discount).toFixed(2)}</p>
+            </div>
+          </div>
         </div>
 
-        {/* Payment panel */}
-        <Card className="border-border/50 flex flex-col">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Pagamento</CardTitle>
-          </CardHeader>
-          <CardContent className="flex-1 flex flex-col justify-between">
-            <div className="space-y-3">
-              {/* Customer info */}
-              <div className="space-y-2">
-                <Label className="text-xs text-muted-foreground">Cliente (opcional)</Label>
-                <Input placeholder="Nome do cliente" value={customerName} onChange={e => setCustomerName(e.target.value)} className="h-9 text-sm" />
-                <Input placeholder="CPF" value={customerCpf} onChange={e => setCustomerCpf(e.target.value)} className="h-9 text-sm" />
-              </div>
+        {/* Right: Payment */}
+        <div className="lg:col-span-4 flex flex-col gap-3 min-h-0">
+          {/* Customer */}
+          <Card className="border-border/50 rounded-xl">
+            <CardContent className="p-3 space-y-2">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Cliente</p>
+              <Input placeholder="Nome do cliente (opcional)" value={customerName} onChange={e => setCustomerName(e.target.value)} className="h-9 text-sm" />
+              <Input placeholder="CPF (opcional)" value={customerCpf} onChange={e => setCustomerCpf(e.target.value)} className="h-9 text-sm" />
+            </CardContent>
+          </Card>
 
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Subtotal</span>
-                <span className="font-mono">R$ {total.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Desconto</span>
-                <span className="font-mono text-success">- R$ {discount.toFixed(2)}</span>
-              </div>
-              <div className="border-t border-border/50 pt-3 flex justify-between">
-                <span className="font-semibold">Total</span>
-                <span className="text-2xl font-bold font-mono text-primary">
-                  R$ {(total - discount).toFixed(2)}
-                </span>
-              </div>
-            </div>
-
-            <div className="space-y-2 mt-6">
-              <p className="text-xs text-muted-foreground font-medium mb-2">Forma de pagamento</p>
+          {/* Payment methods */}
+          <Card className="border-border/50 rounded-xl flex-1">
+            <CardContent className="p-3 space-y-2">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Forma de Pagamento</p>
               {[
                 { value: "dinheiro", label: "Dinheiro", icon: Banknote, color: "text-success" },
                 { value: "cartao", label: "Cartão", icon: CreditCard, color: "text-primary" },
@@ -345,40 +331,41 @@ const PDV = () => {
               ].map(pm => (
                 <Button
                   key={pm.value}
-                  className="w-full justify-start gap-3"
+                  className={`w-full justify-start gap-3 h-12 text-base ${paymentMethod === pm.value ? "ring-2 ring-primary" : ""}`}
                   variant={paymentMethod === pm.value ? "default" : "outline"}
-                  size="lg"
                   onClick={() => setPaymentMethod(pm.value)}
                 >
                   <pm.icon className={`w-5 h-5 ${paymentMethod === pm.value ? "" : pm.color}`} />
                   {pm.label}
                 </Button>
               ))}
+            </CardContent>
+          </Card>
 
+          {/* Action buttons */}
+          <div className="space-y-2">
+            <Button
+              className="w-full h-14 text-lg font-bold rounded-xl gap-2"
+              size="lg"
+              disabled={cart.length === 0 || !paymentMethod || finalizing}
+              onClick={finalizeSale}
+            >
+              {finalizing ? <Loader2 className="w-5 h-5 animate-spin" /> : <ShoppingCart className="w-5 h-5" />}
+              FINALIZAR VENDA (F12)
+            </Button>
+
+            {cart.length > 0 && (
               <Button
-                className="w-full mt-4"
-                size="lg"
-                disabled={cart.length === 0 || !paymentMethod || finalizing}
-                onClick={finalizeSale}
+                className="w-full h-10 rounded-xl"
+                variant="outline"
+                onClick={() => setCancelDialogOpen(true)}
               >
-                {finalizing && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
-                Finalizar Venda
+                <XCircle className="w-4 h-4 mr-2" />
+                Cancelar Venda (ESC)
               </Button>
-
-              {cart.length > 0 && (
-                <Button
-                  className="w-full"
-                  variant="outline"
-                  size="lg"
-                  onClick={() => setCancelDialogOpen(true)}
-                >
-                  <XCircle className="w-4 h-4 mr-2" />
-                  Cancelar Venda
-                </Button>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Cancel confirmation */}

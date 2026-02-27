@@ -1,6 +1,19 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
+interface CompanyInfo {
+  company_name?: string;
+  trade_name?: string;
+  cnpj?: string;
+  phone?: string;
+  email?: string;
+  address_street?: string;
+  address_number?: string;
+  address_city?: string;
+  address_state?: string;
+  address_zip?: string;
+}
+
 interface SaleForPDF {
   sale_number: number;
   customer_name?: string | null;
@@ -16,20 +29,37 @@ interface SaleForPDF {
     unit_price: number;
     total: number;
   }[];
+  operator_name?: string;
+  company?: CompanyInfo;
 }
 
 export function generateSaleReceiptPDF(sale: SaleForPDF): jsPDF {
-  const doc = new jsPDF({ unit: "mm", format: [80, 200] });
+  const doc = new jsPDF({ unit: "mm", format: [80, 220] });
   const w = 80;
   let y = 8;
+  const co = sale.company;
 
-  // Header
+  // Header - Company
   doc.setFontSize(10);
   doc.setFont("helvetica", "bold");
-  doc.text("NexaERP - Comprovante de Venda", w / 2, y, { align: "center" });
-  y += 5;
+  doc.text(co?.trade_name || co?.company_name || "NexaERP", w / 2, y, { align: "center" });
+  y += 4;
+  if (co?.cnpj) {
+    doc.setFontSize(6);
+    doc.setFont("helvetica", "normal");
+    doc.text(`CNPJ: ${co.cnpj}`, w / 2, y, { align: "center" });
+    y += 3;
+  }
+  if (co?.address_street) {
+    doc.setFontSize(6);
+    doc.text(`${co.address_street}${co.address_number ? ", " + co.address_number : ""} - ${co.address_city || ""}/${co.address_state || ""}`, w / 2, y, { align: "center" });
+    y += 3;
+  }
+  if (co?.phone) {
+    doc.text(`Tel: ${co.phone}`, w / 2, y, { align: "center" });
+    y += 3;
+  }
   doc.setFontSize(7);
-  doc.setFont("helvetica", "normal");
   doc.text("DOCUMENTO NÃO FISCAL", w / 2, y, { align: "center" });
   y += 4;
   doc.line(4, y, w - 4, y);
@@ -39,6 +69,7 @@ export function generateSaleReceiptPDF(sale: SaleForPDF): jsPDF {
   doc.setFontSize(7);
   doc.text(`Venda Nº: ${sale.sale_number}`, 4, y); y += 3.5;
   doc.text(`Data: ${new Date(sale.created_at).toLocaleString("pt-BR")}`, 4, y); y += 3.5;
+  if (sale.operator_name) { doc.text(`Operador: ${sale.operator_name}`, 4, y); y += 3.5; }
   if (sale.customer_name) { doc.text(`Cliente: ${sale.customer_name}`, 4, y); y += 3.5; }
   if (sale.customer_cpf) { doc.text(`CPF: ${sale.customer_cpf}`, 4, y); y += 3.5; }
   doc.text(`Pagamento: ${sale.payment_method.toUpperCase()}`, 4, y); y += 3;
@@ -94,15 +125,25 @@ export function generateSaleReceiptPDF(sale: SaleForPDF): jsPDF {
 export function generateSaleFullPDF(sale: SaleForPDF): jsPDF {
   const doc = new jsPDF();
   let y = 15;
+  const co = sale.company;
 
-  // Header
+  // Header - Company
   doc.setFontSize(18);
   doc.setFont("helvetica", "bold");
-  doc.text("NexaERP", 14, y);
-  doc.setFontSize(10);
+  doc.text(co?.trade_name || co?.company_name || "NexaERP", 14, y);
+  y += 6;
+  doc.setFontSize(9);
   doc.setFont("helvetica", "normal");
-  doc.text("Sistema de Gestão Empresarial", 14, y + 6);
-  y += 16;
+  if (co?.cnpj) { doc.text(`CNPJ: ${co.cnpj}`, 14, y); y += 4; }
+  if (co?.address_street) {
+    doc.text(`${co.address_street}${co.address_number ? ", " + co.address_number : ""} - ${co.address_city || ""}/${co.address_state || ""} - CEP: ${co.address_zip || ""}`, 14, y);
+    y += 4;
+  }
+  if (co?.phone || co?.email) {
+    doc.text(`${co?.phone ? "Tel: " + co.phone : ""}${co?.phone && co?.email ? " | " : ""}${co?.email || ""}`, 14, y);
+    y += 4;
+  }
+  y += 2;
   doc.line(14, y, 196, y);
   y += 8;
 
@@ -119,6 +160,7 @@ export function generateSaleFullPDF(sale: SaleForPDF): jsPDF {
     ["Cliente:", sale.customer_name || "Não identificado"],
     ["CPF:", sale.customer_cpf || "—"],
     ["Pagamento:", sale.payment_method.toUpperCase()],
+    ["Operador:", sale.operator_name || "—"],
   ];
   info.forEach(([label, val]) => {
     doc.setFont("helvetica", "bold");
@@ -167,7 +209,7 @@ export function generateSaleFullPDF(sale: SaleForPDF): jsPDF {
   // Footer
   doc.setFontSize(8);
   doc.setFont("helvetica", "normal");
-  doc.text("Documento gerado pelo NexaERP", 14, 285);
+  doc.text(`Documento gerado por ${co?.trade_name || co?.company_name || "NexaERP"}`, 14, 285);
   doc.text(new Date().toLocaleString("pt-BR"), 196, 285, { align: "right" });
 
   return doc;
