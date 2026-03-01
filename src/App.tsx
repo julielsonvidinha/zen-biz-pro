@@ -22,6 +22,7 @@ import Financeiro from "./pages/Financeiro";
 import Configuracoes from "./pages/Configuracoes";
 import NotFound from "./pages/NotFound";
 import { ModulePage } from "./pages/ModulePage";
+import NfeRecebidas from "./pages/NfeRecebidas";
 import {
   BarChart3, UserCog, Shield, Pill, Scissors
 } from "lucide-react";
@@ -50,6 +51,7 @@ const App = () => (
             <Route path="/crediario" element={<AppLayout><Crediario /></AppLayout>} />
             <Route path="/financeiro" element={<AppLayout><Financeiro /></AppLayout>} />
             <Route path="/fiscal" element={<AppLayout><Fiscal /></AppLayout>} />
+            <Route path="/nfe-recebidas" element={<AppLayout><NfeRecebidas /></AppLayout>} />
             <Route path="/relatorios" element={<AppLayout><ModulePage title="Relatórios" description="Relatórios gerenciais e exportação" icon={BarChart3} /></AppLayout>} />
             <Route path="/farmacia" element={<AppLayout><ModulePage title="Farmácia" description="Medicamentos controlados e SNGPC" icon={Pill} /></AppLayout>} />
             <Route path="/armarinho" element={<AppLayout><ModulePage title="Armarinho" description="Produtos por metragem e variações" icon={Scissors} /></AppLayout>} />
