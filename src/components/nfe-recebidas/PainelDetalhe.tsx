@@ -6,6 +6,7 @@ import type { NFeRecebida, MotivoRejeicao } from '@/types/nfe';
 import { HistoricoManifestacoes } from './HistoricoManifestacoes';
 import { BadgeStatus } from './BadgeStatus';
 import { ModalRejeitar } from './ModalRejeitar';
+import { BotaoGerarPDF } from './BotaoGerarPDF';
 
 function fmtCnpj(c: string) {
   return c.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5');
@@ -55,6 +56,9 @@ export function PainelDetalhe({ nota, loading, onClose, onAprovar, onRejeitar }:
         </div>
 
         <div className="p-4 space-y-5">
+          {/* Gerar DANFE */}
+          <BotaoGerarPDF nfe={nota} />
+
           {/* Valores */}
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/30 p-3">
