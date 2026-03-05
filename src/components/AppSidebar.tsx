@@ -21,6 +21,7 @@ const modules = [
   { label: "Crediário", icon: FileText, path: "/crediario" },
   { label: "Financeiro", icon: Landmark, path: "/financeiro" },
   { label: "Fiscal", icon: FileText, path: "/fiscal" },
+  { label: "Fiscal & Contábil", icon: FileText, path: "/fiscal-contabil" },
   { label: "NF-e Recebidas", icon: FileText, path: "/nfe-recebidas" },
   { label: "Relatórios", icon: BarChart3, path: "/relatorios" },
   { label: "Farmácia", icon: Pill, path: "/farmacia" },
