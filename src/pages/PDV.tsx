@@ -6,13 +6,14 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { generateSaleReceiptPDF, generateSaleFullPDF } from "@/lib/pdf-generator";
 import {
   Search, Plus, Minus, Trash2, ShoppingCart, CreditCard, Banknote,
-  QrCode, User, Loader2, FileText, Download, Receipt, XCircle, Monitor
+  QrCode, User, Loader2, FileText, Download, Receipt, XCircle, Monitor, Users
 } from "lucide-react";
 
 interface CartItem {
@@ -29,6 +30,13 @@ interface ProductResult {
   price: number;
   barcode: string | null;
   stock_qty: number;
+}
+
+interface CustomerResult {
+  id: string;
+  name: string;
+  cpf_cnpj: string | null;
+  phone: string | null;
 }
 
 const PDV = () => {
@@ -49,17 +57,27 @@ const PDV = () => {
   const [emittingNfe, setEmittingNfe] = useState(false);
   const [company, setCompany] = useState<any>(null);
 
+  // Customer search
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [customerResults, setCustomerResults] = useState<CustomerResult[]>([]);
+  const [searchingCustomer, setSearchingCustomer] = useState(false);
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerResult | null>(null);
+
+  // Crediário
+  const [installments, setInstallments] = useState("3");
+
   const total = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
   const totalItems = cart.reduce((sum, item) => sum + item.qty, 0);
   const discount = 0;
+  const finalTotal = total - discount;
 
-  // Load company settings
   useEffect(() => {
     supabase.from("company_settings").select("*").limit(1).maybeSingle().then(({ data }) => {
       if (data) setCompany(data);
     });
   }, []);
 
+  // Product search
   const searchProducts = useCallback(async (q: string) => {
     if (q.length < 2) { setSearchResults([]); return; }
     setSearching(true);
@@ -77,6 +95,39 @@ const PDV = () => {
     const timer = setTimeout(() => searchProducts(search), 300);
     return () => clearTimeout(timer);
   }, [search, searchProducts]);
+
+  // Customer search
+  const searchCustomers = useCallback(async (q: string) => {
+    if (q.length < 2) { setCustomerResults([]); return; }
+    setSearchingCustomer(true);
+    const { data } = await supabase
+      .from("customers")
+      .select("id, name, cpf_cnpj, phone")
+      .eq("active", true)
+      .or(`name.ilike.%${q}%,cpf_cnpj.ilike.%${q}%`)
+      .limit(8);
+    setCustomerResults((data as CustomerResult[]) || []);
+    setSearchingCustomer(false);
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => searchCustomers(customerSearch), 300);
+    return () => clearTimeout(timer);
+  }, [customerSearch, searchCustomers]);
+
+  const selectCustomer = (c: CustomerResult) => {
+    setSelectedCustomer(c);
+    setCustomerName(c.name);
+    setCustomerCpf(c.cpf_cnpj || "");
+    setCustomerSearch("");
+    setCustomerResults([]);
+  };
+
+  const clearCustomer = () => {
+    setSelectedCustomer(null);
+    setCustomerName("");
+    setCustomerCpf("");
+  };
 
   const addToCart = (product: ProductResult) => {
     setCart(prev => {
@@ -99,7 +150,7 @@ const PDV = () => {
   const removeItem = (id: string) => setCart(prev => prev.filter(i => i.product_id !== id));
 
   const cancelSale = () => {
-    setCart([]); setPaymentMethod(null); setCustomerName(""); setCustomerCpf("");
+    setCart([]); setPaymentMethod(null); clearCustomer(); setInstallments("3");
     setCancelDialogOpen(false);
     toast({ title: "Venda cancelada" });
   };
@@ -107,6 +158,9 @@ const PDV = () => {
   const finalizeSale = async () => {
     if (!paymentMethod) { toast({ title: "Selecione a forma de pagamento", variant: "destructive" }); return; }
     if (cart.length === 0) { toast({ title: "Carrinho vazio", variant: "destructive" }); return; }
+    if (paymentMethod === "crediario" && !selectedCustomer) {
+      toast({ title: "Crediário requer um cliente cadastrado", description: "Selecione um cliente antes de continuar.", variant: "destructive" }); return;
+    }
     const overStock = cart.find(i => i.qty > i.stock_qty);
     if (overStock) { toast({ title: `Estoque insuficiente: ${overStock.name}`, description: `Disponível: ${overStock.stock_qty}`, variant: "destructive" }); return; }
 
@@ -118,15 +172,36 @@ const PDV = () => {
 
     const { data: saleId, error } = await supabase.rpc("finalize_sale", {
       p_customer_name: customerName || null, p_customer_cpf: customerCpf || null,
-      p_subtotal: total, p_discount: discount, p_total: total - discount,
+      p_subtotal: total, p_discount: discount, p_total: finalTotal,
       p_payment_method: paymentMethod, p_items: items,
     });
 
     if (error) { toast({ title: "Erro ao finalizar venda", description: error.message, variant: "destructive" }); setFinalizing(false); return; }
 
+    // If crediário, create installments in accounts_receivable
+    if (paymentMethod === "crediario" && saleId) {
+      const numInstallments = parseInt(installments);
+      const installmentValue = Math.round((finalTotal / numInstallments) * 100) / 100;
+      const remainder = Math.round((finalTotal - installmentValue * numInstallments) * 100) / 100;
+
+      for (let i = 0; i < numInstallments; i++) {
+        const dueDate = new Date();
+        dueDate.setMonth(dueDate.getMonth() + (i + 1));
+        const amount = i === numInstallments - 1 ? installmentValue + remainder : installmentValue;
+
+        await supabase.from("accounts_receivable").insert({
+          description: `Crediário Venda #${saleId} - Parcela ${i + 1}/${numInstallments}`,
+          amount,
+          due_date: dueDate.toISOString().split("T")[0],
+          user_id: user!.id,
+          customer_id: selectedCustomer?.id || null,
+        });
+      }
+    }
+
     const { data: saleData } = await supabase.from("sales").select("*").eq("id", saleId).single();
     setCompletedSale({ ...saleData, items, operator_name: profile?.full_name, company });
-    setCart([]); setPaymentMethod(null); setCustomerName(""); setCustomerCpf("");
+    setCart([]); setPaymentMethod(null); clearCustomer(); setInstallments("3");
     setFinalizing(false); setReceiptDialogOpen(true);
     toast({ title: "✅ Venda finalizada com sucesso!" });
   };
@@ -168,6 +243,13 @@ const PDV = () => {
   const dateStr = now.toLocaleDateString("pt-BR", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
   const timeStr = now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 
+  const paymentMethods = [
+    { value: "dinheiro", label: "Dinheiro", icon: Banknote, color: "text-success" },
+    { value: "cartao", label: "Cartão", icon: CreditCard, color: "text-primary" },
+    { value: "pix", label: "PIX", icon: QrCode, color: "text-chart-4" },
+    { value: "crediario", label: "Crediário", icon: FileText, color: "text-warning" },
+  ];
+
   return (
     <div className="animate-fade-in h-[calc(100vh-3rem)] flex flex-col">
       {/* Top bar */}
@@ -183,12 +265,10 @@ const PDV = () => {
             <p className="text-[11px] text-muted-foreground capitalize">{dateStr} • {timeStr}</p>
           </div>
         </div>
-        <div className="flex items-center gap-4">
-          <Badge variant="outline" className="gap-1 py-1 px-3">
-            <User className="w-3 h-3" />
-            <span className="text-xs">{profile?.full_name || "Operador"}</span>
-          </Badge>
-        </div>
+        <Badge variant="outline" className="gap-1 py-1 px-3">
+          <User className="w-3 h-3" />
+          <span className="text-xs">{profile?.full_name || "Operador"}</span>
+        </Badge>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 flex-1 min-h-0">
@@ -247,26 +327,18 @@ const PDV = () => {
                   {cart.map((item, idx) => (
                     <tr key={item.product_id} className="border-b border-border/30 hover:bg-muted/30 transition-colors">
                       <td className="p-3 text-sm text-muted-foreground font-mono">{idx + 1}</td>
-                      <td className="p-3">
-                        <p className="text-sm font-semibold">{item.name}</p>
-                      </td>
+                      <td className="p-3"><p className="text-sm font-semibold">{item.name}</p></td>
                       <td className="p-3">
                         <div className="flex items-center justify-center gap-1">
-                          <button onClick={() => updateQty(item.product_id, -1)} className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center hover:bg-destructive/20 transition-colors">
-                            <Minus className="w-3.5 h-3.5" />
-                          </button>
+                          <button onClick={() => updateQty(item.product_id, -1)} className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center hover:bg-destructive/20 transition-colors"><Minus className="w-3.5 h-3.5" /></button>
                           <span className="font-mono text-base font-bold w-10 text-center">{item.qty}</span>
-                          <button onClick={() => updateQty(item.product_id, 1)} className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center hover:bg-success/20 transition-colors">
-                            <Plus className="w-3.5 h-3.5" />
-                          </button>
+                          <button onClick={() => updateQty(item.product_id, 1)} className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center hover:bg-success/20 transition-colors"><Plus className="w-3.5 h-3.5" /></button>
                         </div>
                       </td>
                       <td className="p-3 text-right font-mono text-sm">R$ {item.price.toFixed(2)}</td>
                       <td className="p-3 text-right font-mono text-sm font-bold">R$ {(item.price * item.qty).toFixed(2)}</td>
                       <td className="p-3">
-                        <button onClick={() => removeItem(item.product_id)} className="text-muted-foreground hover:text-destructive transition-colors">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <button onClick={() => removeItem(item.product_id)} className="text-muted-foreground hover:text-destructive transition-colors"><Trash2 className="w-4 h-4" /></button>
                       </td>
                     </tr>
                   ))}
@@ -287,51 +359,80 @@ const PDV = () => {
           {/* Bottom totals bar */}
           <div className="flex items-center justify-between bg-foreground text-background rounded-xl p-4">
             <div className="flex items-center gap-6">
-              <div>
-                <p className="text-xs opacity-70">Itens</p>
-                <p className="text-xl font-bold font-mono">{totalItems}</p>
-              </div>
-              <div>
-                <p className="text-xs opacity-70">Subtotal</p>
-                <p className="text-lg font-mono">R$ {total.toFixed(2)}</p>
-              </div>
-              {discount > 0 && (
-                <div>
-                  <p className="text-xs opacity-70">Desconto</p>
-                  <p className="text-lg font-mono text-success">- R$ {discount.toFixed(2)}</p>
-                </div>
-              )}
+              <div><p className="text-xs opacity-70">Itens</p><p className="text-xl font-bold font-mono">{totalItems}</p></div>
+              <div><p className="text-xs opacity-70">Subtotal</p><p className="text-lg font-mono">R$ {total.toFixed(2)}</p></div>
+              {discount > 0 && <div><p className="text-xs opacity-70">Desconto</p><p className="text-lg font-mono text-success">- R$ {discount.toFixed(2)}</p></div>}
             </div>
             <div className="text-right">
               <p className="text-xs opacity-70">TOTAL A PAGAR</p>
-              <p className="text-3xl font-extrabold font-mono">R$ {(total - discount).toFixed(2)}</p>
+              <p className="text-3xl font-extrabold font-mono">R$ {finalTotal.toFixed(2)}</p>
             </div>
           </div>
         </div>
 
         {/* Right: Payment */}
-        <div className="lg:col-span-4 flex flex-col gap-3 min-h-0">
-          {/* Customer */}
+        <div className="lg:col-span-4 flex flex-col gap-3 min-h-0 overflow-y-auto">
+          {/* Customer selector */}
           <Card className="border-border/50 rounded-xl">
             <CardContent className="p-3 space-y-2">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Cliente</p>
-              <Input placeholder="Nome do cliente (opcional)" value={customerName} onChange={e => setCustomerName(e.target.value)} className="h-9 text-sm" />
-              <Input placeholder="CPF (opcional)" value={customerCpf} onChange={e => setCustomerCpf(e.target.value)} className="h-9 text-sm" />
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5" /> Cliente
+              </p>
+              {selectedCustomer ? (
+                <div className="flex items-center justify-between bg-muted/50 rounded-lg p-2.5">
+                  <div>
+                    <p className="text-sm font-semibold">{selectedCustomer.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {selectedCustomer.cpf_cnpj || "Sem CPF/CNPJ"}
+                      {selectedCustomer.phone ? ` • ${selectedCustomer.phone}` : ""}
+                    </p>
+                  </div>
+                  <Button variant="ghost" size="icon" onClick={clearCustomer} className="h-7 w-7">
+                    <XCircle className="w-4 h-4" />
+                  </Button>
+                </div>
+              ) : (
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                  <Input
+                    placeholder="Buscar cliente (nome ou CPF)..."
+                    value={customerSearch}
+                    onChange={e => setCustomerSearch(e.target.value)}
+                    className="pl-9 h-9 text-sm"
+                  />
+                  {searchingCustomer && <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 animate-spin text-muted-foreground" />}
+                  {customerResults.length > 0 && (
+                    <Card className="absolute z-50 top-full mt-1 left-0 right-0 shadow-lg rounded-lg overflow-hidden">
+                      <CardContent className="p-0">
+                        {customerResults.map(c => (
+                          <button key={c.id} onClick={() => selectCustomer(c)} className="w-full text-left p-3 hover:bg-muted/50 border-b border-border/30 last:border-0 transition-colors">
+                            <p className="text-sm font-medium">{c.name}</p>
+                            <p className="text-xs text-muted-foreground">{c.cpf_cnpj || "Sem CPF/CNPJ"}</p>
+                          </button>
+                        ))}
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
+              )}
+              {/* Manual fields fallback */}
+              {!selectedCustomer && (
+                <div className="space-y-1.5">
+                  <Input placeholder="Ou digite o nome (opcional)" value={customerName} onChange={e => setCustomerName(e.target.value)} className="h-8 text-xs" />
+                  <Input placeholder="CPF na nota (opcional)" value={customerCpf} onChange={e => setCustomerCpf(e.target.value)} className="h-8 text-xs" />
+                </div>
+              )}
             </CardContent>
           </Card>
 
           {/* Payment methods */}
-          <Card className="border-border/50 rounded-xl flex-1">
+          <Card className="border-border/50 rounded-xl">
             <CardContent className="p-3 space-y-2">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Forma de Pagamento</p>
-              {[
-                { value: "dinheiro", label: "Dinheiro", icon: Banknote, color: "text-success" },
-                { value: "cartao", label: "Cartão", icon: CreditCard, color: "text-primary" },
-                { value: "pix", label: "PIX", icon: QrCode, color: "text-chart-4" },
-              ].map(pm => (
+              {paymentMethods.map(pm => (
                 <Button
                   key={pm.value}
-                  className={`w-full justify-start gap-3 h-12 text-base ${paymentMethod === pm.value ? "ring-2 ring-primary" : ""}`}
+                  className={`w-full justify-start gap-3 h-11 text-sm ${paymentMethod === pm.value ? "ring-2 ring-primary" : ""}`}
                   variant={paymentMethod === pm.value ? "default" : "outline"}
                   onClick={() => setPaymentMethod(pm.value)}
                 >
@@ -339,11 +440,31 @@ const PDV = () => {
                   {pm.label}
                 </Button>
               ))}
+
+              {/* Installments for crediário */}
+              {paymentMethod === "crediario" && (
+                <div className="bg-warning/10 border border-warning/30 rounded-lg p-3 space-y-2">
+                  <Label className="text-xs font-semibold text-warning">Parcelas do Crediário</Label>
+                  <Select value={installments} onValueChange={setInstallments}>
+                    <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {[2, 3, 4, 5, 6, 8, 10, 12].map(n => (
+                        <SelectItem key={n} value={String(n)}>
+                          {n}x de R$ {(finalTotal / n).toFixed(2)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[10px] text-muted-foreground">
+                    Vencimentos mensais a partir de 30 dias. {!selectedCustomer && "⚠️ Selecione um cliente cadastrado."}
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
 
           {/* Action buttons */}
-          <div className="space-y-2">
+          <div className="space-y-2 mt-auto">
             <Button
               className="w-full h-14 text-lg font-bold rounded-xl gap-2"
               size="lg"
@@ -353,15 +474,9 @@ const PDV = () => {
               {finalizing ? <Loader2 className="w-5 h-5 animate-spin" /> : <ShoppingCart className="w-5 h-5" />}
               FINALIZAR VENDA (F12)
             </Button>
-
             {cart.length > 0 && (
-              <Button
-                className="w-full h-10 rounded-xl"
-                variant="outline"
-                onClick={() => setCancelDialogOpen(true)}
-              >
-                <XCircle className="w-4 h-4 mr-2" />
-                Cancelar Venda (ESC)
+              <Button className="w-full h-10 rounded-xl" variant="outline" onClick={() => setCancelDialogOpen(true)}>
+                <XCircle className="w-4 h-4 mr-2" /> Cancelar Venda (ESC)
               </Button>
             )}
           </div>
@@ -377,9 +492,7 @@ const PDV = () => {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Voltar</AlertDialogCancel>
-            <AlertDialogAction onClick={cancelSale} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              Confirmar Cancelamento
-            </AlertDialogAction>
+            <AlertDialogAction onClick={cancelSale} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Confirmar Cancelamento</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -388,34 +501,24 @@ const PDV = () => {
       <Dialog open={receiptDialogOpen} onOpenChange={setReceiptDialogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Receipt className="w-5 h-5 text-success" />
-              Venda Finalizada!
-            </DialogTitle>
-            <DialogDescription>
-              Venda #{completedSale?.sale_number} • R$ {Number(completedSale?.total || 0).toFixed(2)}
-            </DialogDescription>
+            <DialogTitle className="flex items-center gap-2"><Receipt className="w-5 h-5 text-success" /> Venda Finalizada!</DialogTitle>
+            <DialogDescription>Venda #{completedSale?.sale_number} • R$ {Number(completedSale?.total || 0).toFixed(2)}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <Button className="w-full gap-2" variant="outline" onClick={downloadReceipt} disabled={generatingPdf}>
-              {generatingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Receipt className="w-4 h-4" />}
-              Imprimir Comprovante (Térmica)
+              {generatingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Receipt className="w-4 h-4" />} Imprimir Comprovante (Térmica)
             </Button>
             <Button className="w-full gap-2" variant="outline" onClick={downloadFullPdf} disabled={generatingPdf}>
-              {generatingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-              Gerar PDF Completo da Venda
+              {generatingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} Gerar PDF Completo da Venda
             </Button>
             {(hasRole("admin") || hasRole("gerente")) && (
               <Button className="w-full gap-2" variant="outline" onClick={emitNfe} disabled={emittingNfe}>
-                {emittingNfe ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
-                Emitir NF-e / NFC-e (Homologação)
+                {emittingNfe ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />} Emitir NF-e / NFC-e (Homologação)
               </Button>
             )}
           </div>
           <DialogFooter>
-            <Button onClick={() => setReceiptDialogOpen(false)} className="w-full">
-              Nova Venda
-            </Button>
+            <Button onClick={() => setReceiptDialogOpen(false)} className="w-full">Nova Venda</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
